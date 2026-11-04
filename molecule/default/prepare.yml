@@ -1,0 +1,270 @@
+---
+- name: Vault dev server with AppRole
+  hosts: server
+  become: true
+  tasks:
+    - name: Install Vault
+      ansible.builtin.include_role:
+        name: pastir.vault_agent
+        tasks_from: install.yml
+      vars:
+        vault_agent_version: "2.0.3"
+        vault_agent_allow_upgrade: false
+        vault_agent_install_method: archive
+
+    - name: Start dev server
+      ansible.builtin.command: >-
+        systemd-run --unit=vault-dev /usr/local/bin/vault server -dev -dev-root-token-id=root
+        -dev-listen-address=0.0.0.0:8200
+      args:
+        creates: /run/systemd/transient/vault-dev.service
+      register: __dev
+
+    - name: Wait for the API
+      ansible.builtin.wait_for:
+        port: 8200
+        timeout: 30
+
+    - name: Configure AppRole, policy and secret
+      ansible.builtin.shell: |
+        set -eo pipefail
+        export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+        vault auth enable approle || true
+        printf 'path "secret/data/app" { capabilities = ["read"] }\n' | vault policy write app -
+        vault write auth/approle/role/app token_policies=app secret_id_ttl=0 token_ttl=1h
+        vault kv put secret/app password=s3cr3t >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Read role_id
+      ansible.builtin.command: vault read -field=role_id auth/approle/role/app/role-id
+      environment: {VAULT_ADDR: "http://127.0.0.1:8200", VAULT_TOKEN: root}
+      register: __rid
+      changed_when: false
+
+    - name: Create secret_id
+      ansible.builtin.command: vault write -f -field=secret_id auth/approle/role/app/secret-id
+      environment: {VAULT_ADDR: "http://127.0.0.1:8200", VAULT_TOKEN: root}
+      register: __sid
+      changed_when: true
+
+    # Converge runs as a separate ansible-playbook process, so keep them in files.
+    - name: Store credentials for the converge run
+      ansible.builtin.copy:
+        dest: "/root/{{ item.name }}"
+        content: "{{ item.value }}"
+        mode: "0600"
+      loop:
+        - {name: role_id, value: "{{ __rid.stdout }}"}
+        - {name: secret_id, value: "{{ __sid.stdout }}"}
+      loop_control:
+        label: "{{ item.name }}"
+
+- name: Application template on the agents
+  hosts: agents:!legacy
+  become: true
+  tasks:
+    - name: Create app directory (owned by the agent user created later; world-writable for the test)
+      ansible.builtin.file:
+        path: /opt/app
+        state: directory
+        mode: "0777"
+
+    - name: Template source as shipped with an application
+      ansible.builtin.copy:
+        dest: /opt/app/env.ctmpl
+        mode: "0644"
+        content: |
+          {% raw %}{{ with secret "secret/data/app" }}DB_PASSWORD={{ .Data.data.password }}{{ end }}
+          V_ENV={{ env "V_ENV" }}
+          {% endraw %}
+
+- name: Older Vault on resolute (the role upgrades it)
+  hosts: agent-resolute
+  become: true
+  tasks:
+    - name: Install unzip
+      ansible.builtin.apt:
+        name: unzip
+        update_cache: true
+
+    - name: Unpack Vault 2.0.2 to /usr/local/bin
+      ansible.builtin.unarchive:
+        src: https://releases.hashicorp.com/vault/2.0.2/vault_2.0.2_linux_amd64.zip
+        dest: /usr/local/bin
+        include: [vault]
+        remote_src: true
+
+- name: Vault Agent installed by hand with a shell script
+  hosts: legacy
+  become: true
+  vars:
+    __role_id: "{{ hostvars['vault-server']['__rid']['stdout'] }}"
+    __secret_id: "{{ hostvars['vault-server']['__sid']['stdout'] }}"
+    __address: "http://{{ hostvars['vault-server']['ansible_facts']['default_ipv4']['address'] }}:8200"
+  tasks:
+    - name: Application user
+      ansible.builtin.user:
+        name: app
+        shell: /bin/bash
+
+    - name: Application directory
+      ansible.builtin.file:
+        path: /opt/app
+        state: directory
+        owner: app
+        group: app
+        mode: "2775"
+
+    - name: Template source as shipped with the application
+      ansible.builtin.copy:
+        dest: /opt/app/env.ctmpl
+        owner: app
+        group: app
+        mode: "0644"
+        content: |
+          {% raw %}{{ with secret "secret/data/app" }}DB_PASSWORD={{ .Data.data.password }}{{ end }}
+          V_ENV={{ env "V_ENV" }}
+          {% endraw %}
+
+    # Stands in for supervisor: every start is logged, so a needless restart is visible.
+    - name: Workers service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/workers.service
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=/bin/sleep infinity
+          ExecStartPost=/bin/sh -c 'date +%%s.%%N >> /var/log/workers-starts.log'
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start workers
+      ansible.builtin.systemd_service:
+        name: workers
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Hand install script (unzip, users, credentials, config, unit)
+      ansible.builtin.shell: |
+        set -eo pipefail
+        cd /tmp
+        apt-get install -y -qq unzip >/dev/null
+        curl -sSfLO https://releases.hashicorp.com/vault/2.0.3/vault_2.0.3_linux_amd64.zip
+        unzip -o -q vault_2.0.3_linux_amd64.zip
+        mv vault /usr/bin/
+        rm -f LICENSE.txt vault_2.0.3_linux_amd64.zip
+
+        /usr/sbin/useradd --system --no-create-home --shell /bin/false vault
+        usermod -aG app vault
+        usermod -aG vault app
+
+        mkdir -p /etc/vault.d/vault-agent
+        echo "V_ENV=molecule" > /etc/vault.d/vault.env
+        echo "$ROLE_ID" > /etc/vault.d/vault-agent/role-id
+        echo "$SECRET_ID" > /etc/vault.d/vault-agent/secret-id
+        chmod 600 /etc/vault.d/vault-agent/role-id /etc/vault.d/vault-agent/secret-id
+        chown -R vault:vault /etc/vault.d
+
+        cat << EOF > /etc/vault.d/vault-agent/agent-config.hcl
+        pid_file = "/run/vault-agent/pidfile"
+
+        vault {
+           address = "$ADDRESS"
+           tls_skip_verify = true
+        }
+
+        auto_auth {
+          method "approle" {
+            config = {
+              role_id_file_path   = "/etc/vault.d/vault-agent/role-id"
+              secret_id_file_path = "/etc/vault.d/vault-agent/secret-id"
+              remove_secret_id_file_after_reading = false
+            }
+          }
+
+          sink "file" {
+            config = {
+              path = "/run/vault-agent/token"
+            }
+          }
+        }
+
+        template {
+          source      = "/opt/app/env.ctmpl"
+          destination = "/opt/app/.env"
+          exec {
+            command = "$COMMAND"
+          }
+        }
+        EOF
+
+        cat << 'EOF' > /etc/sudoers.d/vault
+        vault ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop workers, \
+        /usr/bin/systemctl start workers, \
+        /usr/bin/kill, \
+        /usr/bin/pgrep, \
+        /usr/bin/chown app*app /opt/app/.env, \
+        /usr/bin/chmod 660 /opt/app/.env
+        EOF
+        chmod 440 /etc/sudoers.d/vault
+
+        cat << 'EOF' > /usr/lib/systemd/system/vault.service
+        [Unit]
+        Description=HashiCorp Vault Agent
+        Documentation=https://developer.hashicorp.com/vault/docs
+        Requires=network-online.target
+        After=network-online.target
+        ConditionFileNotEmpty=/etc/vault.d/vault-agent/agent-config.hcl
+        StartLimitIntervalSec=60
+        StartLimitBurst=3
+
+        [Service]
+        Type=simple
+        User=vault
+        Group=vault
+        RuntimeDirectory=vault-agent
+        RuntimeDirectoryMode=0750
+        EnvironmentFile=/etc/vault.d/vault.env
+        Environment=VAULT_LOG_LEVEL=info
+        NoNewPrivileges=no
+        CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_AUDIT_WRITE CAP_IPC_LOCK CAP_CHOWN CAP_FOWNER
+        AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
+        SecureBits=keep-caps
+        ExecStart=/usr/bin/env vault agent -config=/etc/vault.d/vault-agent/agent-config.hcl
+        Restart=on-failure
+        ExecReload=/bin/kill -HUP $MAINPID
+        KillSignal=SIGINT
+        KillMode=process
+        RestartSec=5
+        TimeoutStopSec=30
+        LimitNOFILE=65536
+        LimitMEMLOCK=infinity
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+
+        chmod 755 /usr/lib/systemd/system/vault.service
+        systemctl daemon-reload
+        systemctl enable --now vault.service
+      args:
+        executable: /bin/bash
+        creates: /usr/bin/vault
+      environment:
+        ROLE_ID: "{{ __role_id }}"
+        SECRET_ID: "{{ __secret_id }}"
+        ADDRESS: "{{ __address }}"
+        COMMAND: >-
+          sudo /usr/bin/chown app:app /opt/app/.env && sudo /usr/bin/chmod 660 /opt/app/.env &&
+          sudo /usr/bin/systemctl stop workers && sudo /usr/bin/systemctl start workers
+
+    - name: Wait for the first render (workers started twice)
+      ansible.builtin.command: grep -c . /var/log/workers-starts.log
+      register: __starts
+      until: __starts.stdout == '2'
+      retries: 30
+      delay: 2
+      changed_when: false

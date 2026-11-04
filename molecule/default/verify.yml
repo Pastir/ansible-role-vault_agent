@@ -1,0 +1,92 @@
+---
+- name: Verify
+  hosts: agents
+  become: true
+  vars:
+    __service: "{{ vault_agent_service | default('vault-agent') }}"
+    __bin: >-
+      {{ '/usr/bin/vault' if (vault_agent_install_method | default('archive')) == 'apt'
+         else vault_agent_binary | default('/usr/local/bin/vault') }}
+  tasks:
+    - name: Secret was rendered
+      ansible.builtin.shell: |
+        set -e
+        grep -qx 'DB_PASSWORD=s3cr3t' /opt/app/.env
+        grep -qx 'V_ENV=molecule' /opt/app/.env
+      register: __render
+      until: __render.rc == 0
+      retries: 15
+      delay: 2
+      changed_when: false
+
+    - name: Template command ran
+      ansible.builtin.stat:
+        path: /opt/app/rendered.marker
+      register: __marker
+      failed_when: not __marker.stat.exists
+      when: "'legacy' not in group_names"
+
+    - name: Vault version
+      ansible.builtin.command: "{{ __bin }} version"
+      register: __version
+      changed_when: false
+      failed_when: __version.stdout is not match('Vault v2\.0\.3 ')
+
+    - name: Credentials are private
+      ansible.builtin.stat:
+        path: /etc/vault.d/vault-agent/secret-id
+      register: __sid
+      failed_when: __sid.stat.mode != '0600' or __sid.stat.pw_name != 'vault'
+
+    - name: Agent is running
+      ansible.builtin.systemd_service:
+        name: "{{ __service }}"
+      register: __svc
+      failed_when: __svc.status.ActiveState != 'active'
+
+    - name: Vault package is held (apt)
+      ansible.builtin.command: apt-mark showhold vault
+      register: __hold
+      changed_when: false
+      failed_when: __hold.stdout != 'vault'
+      when: vault_agent_install_method | default('archive') == 'apt'
+
+- name: Verify the taken-over server
+  hosts: legacy
+  become: true
+  tasks:
+    - name: Workers were started only by the first render (prepare), not by converge or the restart
+      ansible.builtin.command: grep -c . /var/log/workers-starts.log
+      register: __starts
+      changed_when: false
+      failed_when: __starts.stdout != '2'
+
+    - name: Rendered file belongs to the application
+      ansible.builtin.stat:
+        path: /opt/app/.env
+      register: __env
+      failed_when: __env.stat.pw_name != 'app' or __env.stat.mode != '0660'
+
+    - name: Unit stays in /usr/lib/systemd/system and is not executable
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      register: __unit
+      failed_when: __unit.stat.exists != item.exists or (item.exists and __unit.stat.mode != '0644')
+      loop:
+        - {path: /usr/lib/systemd/system/vault.service, exists: true}
+        - {path: /etc/systemd/system/vault.service, exists: false}
+
+    - name: Group memberships
+      ansible.builtin.command: id -nG {{ item.user }}
+      register: __id
+      changed_when: false
+      failed_when: item.group not in __id.stdout.split()
+      loop:
+        - {user: vault, group: app}
+        - {user: app, group: vault}
+
+    - name: Sudo rules allow the template command
+      ansible.builtin.command: sudo -l -U vault
+      register: __sudo
+      changed_when: false
+      failed_when: "'/usr/bin/systemctl start workers' not in __sudo.stdout"

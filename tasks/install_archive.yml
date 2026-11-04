@@ -1,0 +1,78 @@
+---
+- name: Install unzip
+  ansible.builtin.apt:
+    name: unzip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read installed Vault version
+  ansible.builtin.command: "{{ __vault_agent_bin }} version"
+  register: __vault_agent_bin_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Remember installed Vault version
+  ansible.builtin.set_fact:
+    __vault_agent_installed_version: >-
+      {{ (__vault_agent_bin_version.stdout | default('') | regex_search('^Vault v([^ ,+]+)', '\1') or ['']) | first }}
+
+- name: Refuse implicit Vault version change
+  ansible.builtin.assert:
+    that:
+      - vault_agent_allow_upgrade or __vault_agent_installed_version in ['', vault_agent_version]
+    fail_msg: >-
+      {{ __vault_agent_bin }} is Vault {{ __vault_agent_installed_version }}, {{ vault_agent_version }} is required.
+      Re-run with -e vault_agent_allow_upgrade=true.
+    quiet: true
+
+- name: Report the pending install (check mode)
+  ansible.builtin.debug:
+    msg: "Would install Vault {{ vault_agent_version }} to {{ __vault_agent_bin }} (installed: {{ __vault_agent_installed_version or 'none' }})"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - __vault_agent_installed_version != vault_agent_version
+
+- name: Install Vault from the release archive
+  when:
+    - not ansible_check_mode
+    - __vault_agent_installed_version != vault_agent_version
+  block:
+    - name: Create a download directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: vault
+      register: __vault_agent_tmp
+
+    - name: Download {{ __vault_agent_archive_name }}
+      ansible.builtin.get_url:
+        url: "{{ __vault_agent_archive_url }}"
+        dest: "{{ __vault_agent_tmp.path }}/{{ __vault_agent_archive_name }}"
+        checksum: "{{ __vault_agent_checksum }}"
+        mode: "0600"
+
+    - name: Unpack the archive
+      ansible.builtin.unarchive:
+        src: "{{ __vault_agent_tmp.path }}/{{ __vault_agent_archive_name }}"
+        dest: "{{ __vault_agent_tmp.path }}"
+        include: [vault]
+        remote_src: true
+
+    - name: Install the binary to {{ __vault_agent_bin }}
+      ansible.builtin.copy:
+        src: "{{ __vault_agent_tmp.path }}/vault"
+        dest: "{{ __vault_agent_bin }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart vault agent
+
+  always:
+    - name: Remove the download directory
+      ansible.builtin.file:
+        path: "{{ __vault_agent_tmp.path }}"
+        state: absent
+      when: __vault_agent_tmp.path is defined

@@ -1,0 +1,99 @@
+---
+# vault-server: Vault dev server with AppRole + a KV v2 secret (test fixture).
+# agent-legacy-noble: installed by hand with a shell script (zip in /usr/bin, vault.service in
+#   /usr/lib/systemd/system, sudo stop/start of the workers); the role takes it over.
+# agent-apt-noble: apt method. agent-resolute: archive defaults, upgrade 2.0.2 -> 2.0.3.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: vault-server
+    image: docker.io/library/ubuntu:24.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    # The vault binary has cap_ipc_lock=ep; exec fails without the capability.
+    capabilities: [IPC_LOCK]
+    network: molecule-vault
+    groups: [server]
+  - name: agent-legacy-noble
+    image: docker.io/library/ubuntu:24.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    capabilities: [IPC_LOCK, AUDIT_WRITE]
+    network: molecule-vault
+    groups: [agents, legacy]
+  - name: agent-apt-noble
+    image: docker.io/library/ubuntu:24.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    # The vault binary has cap_ipc_lock=ep; exec fails without the capability.
+    capabilities: [IPC_LOCK]
+    network: molecule-vault
+    groups: [agents]
+  - name: agent-resolute
+    image: docker.io/library/ubuntu:26.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    # The vault binary has cap_ipc_lock=ep; exec fails without the capability.
+    capabilities: [IPC_LOCK]
+    network: molecule-vault
+    groups: [agents]
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      agents:
+        vault_agent_address: "http://{{ hostvars['vault-server']['ansible_facts']['default_ipv4']['address'] }}:8200"
+        vault_agent_role_id: "{{ hostvars['vault-server']['__role_id'] }}"
+        vault_agent_secret_id: "{{ hostvars['vault-server']['__secret_id'] }}"
+        vault_agent_env:
+          V_ENV: molecule
+        vault_agent_templates:
+          - source: /opt/app/env.ctmpl
+            destination: /opt/app/.env
+            perms: "0640"
+            command: "touch /opt/app/rendered.marker"
+    host_vars:
+      agent-legacy-noble:
+        # Layout of a hand-installed agent: binary in /usr/bin, vault.service in /usr/lib/systemd/system.
+        vault_agent_service: vault
+        vault_agent_unit_path: /usr/lib/systemd/system/vault.service
+        vault_agent_binary: /usr/bin/vault
+        vault_agent_user_groups: [app]
+        vault_agent_group_members: [app]
+        vault_agent_capability_bounding_set:
+          [CAP_SETUID, CAP_SETGID, CAP_DAC_OVERRIDE, CAP_AUDIT_WRITE, CAP_IPC_LOCK, CAP_CHOWN, CAP_FOWNER]
+        vault_agent_ambient_capabilities: [CAP_SETUID, CAP_SETGID, CAP_DAC_OVERRIDE]
+        vault_agent_templates:
+          - source: /opt/app/env.ctmpl
+            destination: /opt/app/.env
+            command: >-
+              sudo /usr/bin/chown app:app /opt/app/.env && sudo /usr/bin/chmod 660 /opt/app/.env &&
+              sudo /usr/bin/systemctl stop workers && sudo /usr/bin/systemctl start workers
+        vault_agent_sudo_commands:
+          - /usr/bin/systemctl stop workers
+          - /usr/bin/systemctl start workers
+          - /usr/bin/chown app\:app /opt/app/.env
+          - /usr/bin/chmod 660 /opt/app/.env
+      agent-apt-noble:
+        vault_agent_install_method: apt
+      agent-resolute:
+        vault_agent_allow_upgrade: true
+scenario:
+  test_sequence:
+    - destroy
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

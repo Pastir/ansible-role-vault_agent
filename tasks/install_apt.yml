@@ -1,0 +1,55 @@
+---
+- name: Add HashiCorp repository
+  when: vault_agent_repo_enabled
+  block:
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download HashiCorp key
+      ansible.builtin.get_url:
+        url: https://apt.releases.hashicorp.com/gpg
+        dest: /etc/apt/keyrings/hashicorp.asc
+        mode: "0644"
+
+    - name: Add HashiCorp apt source
+      ansible.builtin.deb822_repository:
+        name: hashicorp
+        types: [deb]
+        uris: [https://apt.releases.hashicorp.com]
+        suites: ["{{ ansible_facts['distribution_release'] }}"]
+        components: [main]
+        signed_by: /etc/apt/keyrings/hashicorp.asc
+        install_python_debian: true
+      register: __vault_repo
+
+- name: Gather installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Refuse implicit Vault version change
+  ansible.builtin.assert:
+    that:
+      - vault_agent_allow_upgrade or ansible_facts.packages['vault'][0].version is match((vault_agent_version | regex_escape) ~ '-')
+    fail_msg: >-
+      vault {{ ansible_facts.packages['vault'][0].version }} is installed, {{ vault_agent_version }} is required.
+      Re-run with -e vault_agent_allow_upgrade=true.
+    quiet: true
+  when: "'vault' in ansible_facts.packages"
+
+- name: Install Vault package
+  ansible.builtin.apt:
+    name: "vault={{ vault_agent_version }}-*"
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ 0 if (__vault_repo is defined and __vault_repo is changed) else 3600 }}"
+    allow_change_held_packages: true
+  notify: Restart vault agent
+
+- name: Hold Vault
+  ansible.builtin.dpkg_selections:
+    name: vault
+    selection: hold
+  when: vault_agent_hold and not ansible_check_mode

@@ -1,0 +1,42 @@
+# {{ ansible_managed }}
+pid_file = "{{ vault_agent_run_dir }}/pidfile"
+
+vault {
+  address         = "{{ vault_agent_address }}"
+{% if vault_agent_ca_cert %}
+  ca_cert         = "{{ vault_agent_ca_cert }}"
+{% endif %}
+  tls_skip_verify = {{ vault_agent_tls_skip_verify | string | lower }}
+}
+
+auto_auth {
+  method "approle" {
+    config = {
+      role_id_file_path                   = "{{ vault_agent_config_dir }}/role-id"
+      secret_id_file_path                 = "{{ vault_agent_config_dir }}/secret-id"
+      remove_secret_id_file_after_reading = {{ vault_agent_remove_secret_id_after_reading | string | lower }}
+    }
+  }
+
+  sink "file" {
+    config = {
+      path = "{{ vault_agent_run_dir }}/token"
+    }
+  }
+}
+{% for t in vault_agent_templates %}
+
+template {
+  source      = "{{ t.source }}"
+  destination = "{{ t.destination }}"
+{%   if t.perms is defined %}
+  perms       = "{{ t.perms }}"
+{%   endif %}
+  error_on_missing_key = {{ t.error_on_missing_key | default(true) | string | lower }}
+{%   if t.command is defined %}
+  exec {
+    command = {{ t.command | to_json }}
+  }
+{%   endif %}
+}
+{% endfor %}

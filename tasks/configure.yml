@@ -1,0 +1,74 @@
+---
+- name: Create config and runtime directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vault_agent_user }}"
+    group: "{{ vault_agent_group }}"
+    mode: "0750"
+  loop:
+    - "{{ vault_agent_config_dir }}"
+
+- name: Write AppRole credentials
+  ansible.builtin.copy:
+    dest: "{{ vault_agent_config_dir }}/{{ item.name }}"
+    # Trailing newline as written by "echo" (the agent trims it).
+    content: "{{ item.value }}\n"
+    owner: "{{ vault_agent_user }}"
+    group: "{{ vault_agent_group }}"
+    mode: "0600"
+  loop:
+    - {name: role-id, value: "{{ vault_agent_role_id }}"}
+    - {name: secret-id, value: "{{ vault_agent_secret_id }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  # With remove_secret_id_after_reading the agent deletes the file: do not recreate it on every run.
+  when: item.name == 'role-id' or not vault_agent_remove_secret_id_after_reading
+  notify: Restart vault agent
+
+- name: Write agent configuration
+  ansible.builtin.template:
+    src: agent-config.hcl.j2
+    dest: "{{ __vault_agent_config }}"
+    owner: "{{ vault_agent_user }}"
+    group: "{{ vault_agent_group }}"
+    mode: "0640"
+  notify: Restart vault agent
+
+- name: Write service environment
+  ansible.builtin.template:
+    src: vault-agent.env.j2
+    dest: "{{ __vault_agent_env_file }}"
+    owner: root
+    group: "{{ vault_agent_group }}"
+    mode: "0640"
+  notify: Restart vault agent
+
+- name: Write systemd unit
+  ansible.builtin.template:
+    src: vault-agent.service.j2
+    dest: "{{ vault_agent_unit_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault agent
+
+- name: Remember that the unit exists (handlers may restart it now)
+  ansible.builtin.set_fact:
+    __vault_agent_unit_present: true
+
+- name: Sudo rules for template commands
+  community.general.sudoers:
+    name: "{{ vault_agent_service }}"
+    user: "{{ vault_agent_user }}"
+    commands: "{{ vault_agent_sudo_commands }}"
+    nopassword: true
+    state: "{{ 'present' if vault_agent_sudo_commands | length > 0 else 'absent' }}"
+
+- name: Enable and start the agent
+  ansible.builtin.systemd_service:
+    name: "{{ vault_agent_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true

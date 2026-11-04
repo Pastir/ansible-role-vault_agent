@@ -1,0 +1,45 @@
+---
+- name: Create agent group
+  ansible.builtin.group:
+    name: "{{ vault_agent_group }}"
+    system: true
+  when: vault_agent_user_create
+
+- name: Create agent user
+  ansible.builtin.user:
+    name: "{{ vault_agent_user }}"
+    group: "{{ vault_agent_group }}"
+    groups: "{{ vault_agent_user_groups }}"
+    append: true
+    system: true
+    create_home: false
+    shell: /bin/false
+  when: vault_agent_user_create
+
+- name: Add agent user to extra groups
+  ansible.builtin.user:
+    name: "{{ vault_agent_user }}"
+    groups: "{{ vault_agent_user_groups }}"
+    append: true
+  when:
+    - not vault_agent_user_create
+    - vault_agent_user_groups | length > 0
+
+- name: Read local users
+  ansible.builtin.getent:
+    database: passwd
+  when: vault_agent_group_members | length > 0
+
+- name: Check that agent group members exist
+  ansible.builtin.assert:
+    that: vault_agent_group_members | difference(ansible_facts.getent_passwd.keys()) | length == 0
+    fail_msg: "Users missing on {{ inventory_hostname }}: {{ vault_agent_group_members | difference(ansible_facts.getent_passwd.keys()) | join(', ') }}"
+    quiet: true
+  when: vault_agent_group_members | length > 0
+
+- name: Add members to the agent group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: ["{{ vault_agent_group }}"]
+    append: true
+  loop: "{{ vault_agent_group_members }}"

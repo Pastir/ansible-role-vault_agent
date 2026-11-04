@@ -1,0 +1,22 @@
+---
+- name: AppRole credentials from the test server
+  hosts: server
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Read credentials
+      ansible.builtin.slurp:
+        src: "/root/{{ item }}"
+      loop: [role_id, secret_id]
+      register: __creds
+
+    - name: Expose credentials
+      ansible.builtin.set_fact:
+        __role_id: "{{ __creds.results[0].content | b64decode }}"
+        __secret_id: "{{ __creds.results[1].content | b64decode }}"
+
+- name: Converge
+  hosts: agents
+  become: true
+  roles:
+    - role: pastir.vault_agent

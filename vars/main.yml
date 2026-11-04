@@ -1,0 +1,20 @@
+---
+__vault_agent_config: "{{ vault_agent_config_dir }}/agent-config.hcl"
+__vault_agent_env_file: "{{ vault_agent_config_dir | dirname }}/{{ vault_agent_service }}.env"
+
+__vault_agent_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] | default(ansible_facts['architecture']) }}"
+__vault_agent_archive_name: "vault_{{ vault_agent_version }}_linux_{{ __vault_agent_arch }}.zip"
+__vault_agent_archive_url: "{{ vault_agent_archive_base_url }}/{{ vault_agent_version }}/{{ __vault_agent_archive_name }}"
+
+# From vault_<version>_SHA256SUMS, signature checked with the HashiCorp key C874011F0AB405110D02105534365D9472D7468F.
+__vault_agent_archive_checksums:
+  vault_2.0.3_linux_amd64.zip: 1e0ffb7a82491219c7242da6e05e2d756b05d1097c29799a42228661f229bc2a
+  vault_2.0.3_linux_arm64.zip: 9423a715aea0689f9e498fe7cc5ea692aa1eff282f8b9bc26af28cad69d6d841
+
+__vault_agent_checksum: >-
+  {{ 'sha256:' ~ (vault_agent_archive_checksum or __vault_agent_archive_checksums[__vault_agent_archive_name])
+     if (vault_agent_archive_checksum or __vault_agent_archive_name in __vault_agent_archive_checksums)
+     else 'sha256:' ~ vault_agent_archive_base_url ~ '/' ~ vault_agent_version ~ '/vault_' ~ vault_agent_version ~ '_SHA256SUMS' }}
+
+# The apt package installs /usr/bin/vault.
+__vault_agent_bin: "{{ vault_agent_binary if vault_agent_install_method == 'archive' else '/usr/bin/vault' }}"

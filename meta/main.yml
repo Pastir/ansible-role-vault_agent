@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: Pastir Ivan
+  role_name: vault_agent
+  namespace: pastir
+  description: Vault Agent with AppRole auto-auth and templates, installed from the release archive or the HashiCorp repository
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+        - resolute
+  galaxy_tags:
+    - vault
+    - secrets
+    - hashicorp
+dependencies: []

@@ -1,0 +1,67 @@
+---
+# Vault Agent (AppRole auto-auth + templates).
+vault_agent_version: "2.0.3"
+# Changing the installed version (up or down) needs this flag: -e vault_agent_allow_upgrade=true.
+vault_agent_allow_upgrade: false
+
+# archive: official zip from releases.hashicorp.com, checksum-verified (no apt repository).
+# apt:     "vault" package from the HashiCorp APT repository, pinned and held.
+vault_agent_install_method: archive
+
+# archive method.
+vault_agent_archive_base_url: https://releases.hashicorp.com/vault
+# sha256 of the zip. Empty: the role's built-in table for known versions,
+# otherwise the SHA256SUMS file published next to the archive.
+vault_agent_archive_checksum: ""
+vault_agent_binary: /usr/local/bin/vault
+
+# apt method.
+vault_agent_hold: true
+vault_agent_repo_enabled: true
+
+# systemd service that runs "vault agent". The apt package ships vault.service for a Vault SERVER,
+# so with the apt method use a different name.
+vault_agent_service: vault-agent
+vault_agent_unit_path: "/etc/systemd/system/{{ vault_agent_service }}.service"
+vault_agent_log_level: info
+# Capabilities of the service. Empty lists leave the systemd defaults.
+vault_agent_capability_bounding_set: []
+vault_agent_ambient_capabilities: []
+# sudo inside template commands does not work with NoNewPrivileges=yes.
+vault_agent_no_new_privileges: "{{ vault_agent_sudo_commands | length == 0 }}"
+
+# Service account. With the archive method the role creates it (system user, no home, no shell).
+vault_agent_user: vault
+vault_agent_group: vault
+vault_agent_user_create: "{{ vault_agent_install_method == 'archive' }}"
+# Extra groups of the agent user, e.g. the application group, to write rendered files.
+vault_agent_user_groups: []
+# Existing users added to the agent group (they must exist before the role runs).
+vault_agent_group_members: []
+
+vault_agent_config_dir: /etc/vault.d/vault-agent
+vault_agent_run_dir: /run/vault-agent
+
+# Vault server.
+vault_agent_address: ""
+vault_agent_ca_cert: ""
+# Do NOT enable in production: disables TLS verification of the Vault server.
+vault_agent_tls_skip_verify: false
+
+# AppRole credentials (put them in a secret store / ansible-vault, never in plain text).
+vault_agent_role_id: ""
+vault_agent_secret_id: ""
+vault_agent_remove_secret_id_after_reading: false
+
+# Environment file for the service (e.g. variables used inside templates).
+vault_agent_env: {}
+
+# Templates: [{source, destination, perms?, command?, error_on_missing_key?}]
+#   source:      .ctmpl file on the host (e.g. shipped with the application)
+#   destination: rendered file
+#   command:     run after the file was (re)rendered
+vault_agent_templates: []
+
+# Extra sudo rules for the agent user, so that template commands can run privileged
+# steps, e.g. ["/usr/bin/systemctl restart supervisor"]. Escape ":" "," "=" in arguments ("\:").
+vault_agent_sudo_commands: []

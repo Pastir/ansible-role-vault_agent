@@ -1,0 +1,8 @@
+---
+- name: Install Vault from the release archive
+  ansible.builtin.import_tasks: install_archive.yml
+  when: vault_agent_install_method == 'archive'
+
+- name: Install Vault from the HashiCorp repository
+  ansible.builtin.import_tasks: install_apt.yml
+  when: vault_agent_install_method == 'apt'

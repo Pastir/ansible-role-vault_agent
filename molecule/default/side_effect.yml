@@ -1,0 +1,20 @@
+---
+# A restart of the agent (as after a config change) must not run the template command again
+# when the rendered file did not change: on the servers that command restarts supervisor.
+- name: Restart the agent
+  hosts: legacy
+  become: true
+  tasks:
+    - name: Restart vault
+      ansible.builtin.systemd_service:
+        name: vault
+        state: restarted
+
+    - name: Wait for a new token
+      ansible.builtin.wait_for:
+        path: /run/vault-agent/token
+        timeout: 30
+
+    - name: Give the template time to render
+      ansible.builtin.pause:
+        seconds: 10

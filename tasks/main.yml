@@ -1,0 +1,35 @@
+---
+- name: Validate input
+  ansible.builtin.assert:
+    that:
+      - vault_agent_install_method in ['archive', 'apt']
+      - vault_agent_install_method == 'archive' or vault_agent_service != 'vault'
+      - vault_agent_address is match('^https?://')
+      - vault_agent_role_id | length > 0
+      - vault_agent_secret_id | length > 0
+      - vault_agent_templates | rejectattr('source', 'defined') | list | length == 0
+      - vault_agent_templates | rejectattr('destination', 'defined') | list | length == 0
+    fail_msg: >-
+      vault_agent_install_method is archive or apt (with apt, vault.service belongs to the package: pick another vault_agent_service);
+      vault_agent_address (http/https URL), vault_agent_role_id and vault_agent_secret_id are required;
+      every template needs source and destination.
+    quiet: true
+  tags: [vault_agent]
+
+- name: Warn about disabled TLS verification
+  ansible.builtin.debug:
+    msg: "vault_agent_tls_skip_verify is true on {{ inventory_hostname }}: the Vault server certificate is NOT verified."
+  when: vault_agent_tls_skip_verify
+  tags: [vault_agent]
+
+- name: Install Vault
+  ansible.builtin.import_tasks: install.yml
+  tags: [vault_agent, vault_agent_install]
+
+- name: Service account
+  ansible.builtin.import_tasks: user.yml
+  tags: [vault_agent, vault_agent_config]
+
+- name: Configure Vault Agent
+  ansible.builtin.import_tasks: configure.yml
+  tags: [vault_agent, vault_agent_config]

@@ -1,0 +1,38 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=HashiCorp Vault Agent
+Documentation=https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent
+Wants=network-online.target
+After=network-online.target
+ConditionFileNotEmpty={{ __vault_agent_config }}
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User={{ vault_agent_user }}
+Group={{ vault_agent_group }}
+RuntimeDirectory={{ vault_agent_run_dir | basename }}
+RuntimeDirectoryMode=0750
+EnvironmentFile=-{{ __vault_agent_env_file }}
+Environment=VAULT_LOG_LEVEL={{ vault_agent_log_level }}
+NoNewPrivileges={{ 'yes' if vault_agent_no_new_privileges | bool else 'no' }}
+{% if vault_agent_capability_bounding_set | length > 0 %}
+CapabilityBoundingSet={{ vault_agent_capability_bounding_set | join(' ') }}
+{% endif %}
+{% if vault_agent_ambient_capabilities | length > 0 %}
+AmbientCapabilities={{ vault_agent_ambient_capabilities | join(' ') }}
+SecureBits=keep-caps
+{% endif %}
+ExecStart={{ __vault_agent_bin }} agent -config={{ __vault_agent_config }}
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
