@@ -14,6 +14,10 @@ Two install methods:
 
 A version change (up or down) needs `-e vault_agent_allow_upgrade=true`. Without the flag the role stops with a message.
 
+## Requirements
+
+- ansible-core >= 2.16, collection `community.general` (sudoers rule) (`requirements.yml` in the role root)
+
 ## Variables
 
 | Variable | Default | Description |
@@ -104,10 +108,13 @@ roles:
   - name: pastir.vault_agent
     src: git+git@github.com:Pastir/ansible-role-vault_agent.git
     version: main  # or a tag
+# A role cannot install collections by itself: the project lists them (see requirements.yml in the role root).
+collections:
+  - name: community.general
 ```
 
 ```bash
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml   # roles and collections
 ```
 
 ## License
